@@ -84,6 +84,7 @@ strat7 <- function() {
 # Paper: http://www.arpitaghosh.com/papers/gift1.pdf
 theta <- data.frame(player.no = n.play:1)
 theta$theta[1] <- 0.5
+
 for (x in 1:(n.play - 1)){
   theta$theta[x+1] <- theta$theta[x] - ((theta$theta[x])^2) / 2
 }
@@ -135,8 +136,9 @@ chooser <- function(p) {
 # Variables
 n.play <- 15 # Number of players
 max.steals <- 3 # Maximum number of times a gift can be stolen
+n.init.open <- 4 # Number of gifts open at the beginning
 v <- .9 # Variance in tastes
-iterations <- 10 # How many times to play?
+iterations <- 1 # How many times to play?
 extra <- FALSE # Does first person get an extra shot at the end?
 
 cumulative <- data.frame()
@@ -152,8 +154,14 @@ for (games in 1:iterations){
   gifts <- data.frame(gift.no = 1:n.play, 
                       brought = sample(1:n.play,replace=F),
                       steals=rep(0, times = n.play),
-                      opened=rep(0,times = n.play),
+                      #opened=rep(0,times = n.play),
                       underlying.value = runif(n.play))
+  # Randomly assign n.init.open gifts to be open before the game starts
+  gifts$opened[sample(1:nrow(gifts), nrow(gifts), replace=F)] <- 
+      rep(c(0,1), c(n.play - n.init.open, n.init.open))
+
+  # Store vector of initially opened gifts
+  init.open <- filter(gifts,opened==1)[,1]
   
   # Set up players
   # Each player has a strategy, chosen at random. 
@@ -170,6 +178,8 @@ for (games in 1:iterations){
   # Game play
   who_has <- players
   who_has$gift <- NA
+  who_has$steals <- 0 # number of steals player has made
+  who_has$rounds <- 0 # number of turns player has had
   #game <- data.frame(player.no=1:n.play) # This will track the full game. Switched off when running multiple iterations.
   total.rounds <- 0
   last.stolen <- 0
@@ -190,16 +200,22 @@ for (games in 1:iterations){
       
       # Need df of stealable gifts, with value to potential stealer attached
       stealable <- values[c(1,player+1)]
+      print("started stealable")
       names(stealable)[2] <- "specific"
       stealable <- gifts %>%
         filter(opened==1,steals<max.steals,!gift.no==last.stolen) %>%
         left_join(stealable,by=c("gift.no"="gifts"))
-      
+      print("finished stealable")
       available <- nrow(stealable) + nrow(unopened) # for use in strategy 1
       
       if (nrow(stealable) == 0) {
         steal <- FALSE # if there's nothing to steal, then open
-      } else steal <- will_steal(strategy) # Otherwise use strategy to determine whether to open or steal
+        print("nothing stealable")
+      } else {
+        print("something stealable")
+        steal <- will_steal(strategy) # Otherwise use strategy to determine whether to open or steal
+        print("figured out stealing strategy")
+      }
       
       if (steal) {
         
@@ -209,8 +225,17 @@ for (games in 1:iterations){
         newplayer <- who_has$player.no[which(who_has$gift == choice)] # player stolen from becomes new player
         who_has$gift[which(who_has$player.no == player)] <- choice # assign gift to stealer
         who_has$gift[which(who_has$player.no == newplayer)] <- NA
-        gifts$steals[which(gifts$gift.no == choice)] <- 
-          gifts$steals[which(gifts$gift.no == choice)] + 1 # add to number of times gift has been stolen
+        who_has$rounds[which(who_has$player.no == player)] <- 
+          who_has$rounds[which(who_has$player.no == player)] + 1 # add to number of turns player has had
+        
+        if (!choice %in% init.vector) {
+          # If the "steal" is a true steal, i.e. not from an initially open gift
+          gifts$steals[which(gifts$gift.no == choice)] <- 
+            gifts$steals[which(gifts$gift.no == choice)] + 1 # add to number of times gift has been stolen
+          who_has$steals[which(who_has$player.no == player)] <- 
+            who_has$steals[which(who_has$player.no == player)] + 1 # add to number of times player has stolen a gift
+        }
+        
         
         # This will print results of each turn. Helpful for debugging but unnecessary.
         print(paste0("Player ", player, ", following strategy #", strategy, ", steals gift #", choice, " from Player ", newplayer))
@@ -225,6 +250,8 @@ for (games in 1:iterations){
         choice <- unopened$gift.no[1] # takes first available gift
         gifts$opened[gifts$gift.no == choice] <- 1 # gift has now been opened
         who_has$gift[who_has$player.no == player] <- choice # assign gift
+        who_has$rounds[which(who_has$player.no == player)] <- 
+          who_has$rounds[which(who_has$player.no == player)] + 1 # add to number of turns player has had
         total.rounds <- total.rounds + 1
         
         # This will print results of each turn. Helpful for debugging but unnecessary.
@@ -270,6 +297,7 @@ for (games in 1:iterations){
   
   # Track results from all games
   who_has$result <- mapply(function(x)values[who_has$gift[x], x + 1], who_has$player.no)
+  who_has$optimal <- mapply(function(x)max(values[,x + 1]), who_has$player.no)
   who_has <- gifts %>%
     select(gift.no,underlying.value) %>%
     left_join(who_has, ., by=c("gift" = "gift.no"))
@@ -285,45 +313,45 @@ for (games in 1:iterations){
 # END MODEL
 # BEGIN ANALYSIS
 
-# Results by strategy
-cumulative %>%
-  group_by(strategy) %>%
-  summarize(score = mean(result)) %>%
-  ggplot(., aes(factor(strategy), score)) + geom_bar(stat = "identity") +
-  ggtitle("Value by Strategy") + xlab("Strategy") + ylab("Score")
-
-# Results by player order
-cumulative %>%
-  group_by(player.no) %>%
-  summarize(score = mean(result)) %>%
-  ggplot(., aes(player.no,score)) + geom_line() +
-  ggtitle("Value by order of draw") + xlab("Player position") + ylab("Score")
-
-# Results by strategy and player order
-cumulative %>%
-  filter(player.no < 6) %>% # Early drawers
-  group_by(strategy) %>%
-  summarize(score = mean(result)) %>%
-  ggplot(., aes(factor(strategy), score))+geom_bar(stat = "identity")+
-  ggtitle("Value by strategy for early drawers") + xlab("Strategy") + ylab("Score")
-cumulative %>%
-  filter(player.no >= 6,player.no < 11) %>% # Middle drawers
-  group_by(strategy) %>%
-  summarize(score = mean(result)) %>%
-  ggplot(., aes(factor(strategy), score)) + geom_bar(stat = "identity")+
-  ggtitle("Value by strategy for middle drawers") + xlab("Strategy") + ylab("Score")
-cumulative %>%
-  filter(player.no >= 11) %>% # Late drawers
-  group_by(strategy) %>%
-  summarize(score=mean(result)) %>%
-  ggplot(., aes(factor(strategy),score)) + geom_bar(stat = "identity")+
-  ggtitle("Value by strategy for late drawers") + xlab("Strategy") + ylab("Score")
-
-# Regressions
-# Basic regression
-regress <- lm(result ~ player.no + factor(strategy), data = cumulative)
-summary(regress)
-
-# Add interaction term
-regress <- lm(result ~ factor(strategy) * factor(player.no), data = cumulative)
-summary(regress)
+# # Results by strategy
+# cumulative %>%
+#   group_by(strategy) %>%
+#   summarize(score = mean(result)) %>%
+#   ggplot(., aes(factor(strategy), score)) + geom_bar(stat = "identity") +
+#   ggtitle("Value by Strategy") + xlab("Strategy") + ylab("Score")
+# 
+# # Results by player order
+# cumulative %>%
+#   group_by(player.no) %>%
+#   summarize(score = mean(result)) %>%
+#   ggplot(., aes(player.no,score)) + geom_line() +
+#   ggtitle("Value by order of draw") + xlab("Player position") + ylab("Score")
+# 
+# # Results by strategy and player order
+# cumulative %>%
+#   filter(player.no < 6) %>% # Early drawers
+#   group_by(strategy) %>%
+#   summarize(score = mean(result)) %>%
+#   ggplot(., aes(factor(strategy), score))+geom_bar(stat = "identity")+
+#   ggtitle("Value by strategy for early drawers") + xlab("Strategy") + ylab("Score")
+# cumulative %>%
+#   filter(player.no >= 6,player.no < 11) %>% # Middle drawers
+#   group_by(strategy) %>%
+#   summarize(score = mean(result)) %>%
+#   ggplot(., aes(factor(strategy), score)) + geom_bar(stat = "identity")+
+#   ggtitle("Value by strategy for middle drawers") + xlab("Strategy") + ylab("Score")
+# cumulative %>%
+#   filter(player.no >= 11) %>% # Late drawers
+#   group_by(strategy) %>%
+#   summarize(score=mean(result)) %>%
+#   ggplot(., aes(factor(strategy),score)) + geom_bar(stat = "identity")+
+#   ggtitle("Value by strategy for late drawers") + xlab("Strategy") + ylab("Score")
+# 
+# # Regressions
+# # Basic regression
+# regress <- lm(result ~ player.no + factor(strategy), data = cumulative)
+# summary(regress)
+# 
+# # Add interaction term
+# regress <- lm(result ~ factor(strategy) * factor(player.no), data = cumulative)
+# summary(regress)
